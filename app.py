@@ -24,7 +24,7 @@ class Conversation(db.Model):
 @app.route('/api/get_convos', methods=['GET'])
 def get_convos():
     # gets 20 random conversations
-    conversations = Conversation.order_by(func.rand()).limit(10)
+    conversations = Conversation.order_by(func.rand()).limit(20)
     return jsonify(
         [{"id": conversations.id, "user_id": conversations.user_id, "start_date": conversations.start} for conversation
          in conversations]), 200
