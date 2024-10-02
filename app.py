@@ -4,9 +4,11 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy_utils import database_exists, create_database
 from  sqlalchemy.sql.expression import func, select
 # import random
-
+from flask_cors import CORS
+# CORS
 app = Flask(__name__)
-
+CORS(app)
+C_PORT = 5002
 # Use the existing database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://admin:Wfe._84ivN3UX4j.X2z!dfKnAiRA@content-database-1.c1qcm4w2sbne.us-east-1.rds.amazonaws.com:3306/conversation_db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -34,4 +36,4 @@ def get_convos():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=C_PORT)
