@@ -3,9 +3,11 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy_utils import database_exists, create_database
 from  sqlalchemy.sql.expression import func, select
+from flask_cors import CORS
 # import random
 
 app = Flask(__name__)
+CORS(app)
 
 # Use the existing database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://admin:Wfe._84ivN3UX4j.X2z!dfKnAiRA@content-database-1.c1qcm4w2sbne.us-east-1.rds.amazonaws.com:3306/conversation_db'
