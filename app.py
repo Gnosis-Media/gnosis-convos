@@ -26,7 +26,7 @@ class Conversation(db.Model):
     last_update = db.Column(db.DateTime, nullable=False)
 
 
-@app.route('/api/get_convos', methods=['GET'])
+@app.route('/api/convos', methods=['GET'])
 def get_convos():
     # gets 20 random conversations
     # conversations = Conversation.query.order_by(func.random()).limit(20)
