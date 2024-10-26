@@ -1,7 +1,7 @@
 Flask==2.3.2
 Flask-SQLAlchemy==3.0.5
 SQLAlchemy==2.0.19
-pymysql==1.1.0
+pymysql==1.1.1
 Flask-CORS==4.0.0
 Werkzeug==2.3.6
 SQLAlchemy-Utils==0.41.1
