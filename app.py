@@ -35,6 +35,13 @@ def get_convos():
         [{"id": conversation.id, "user_id": conversation.user_id, "start_date": conversation.start_date, "last_update": conversation.last_update} for conversation
          in conversations]), 200
 
+@app.route('/api/convos?userId={id}', methods=['GET'])
+def get_convos_by_id(id):
+    conversations = Conversation.query.filter_by(id = id).all()
+    return jsonify(
+        [{"id": conversation.id, "user_id": conversation.user_id, "start_date": conversation.start_date, "last_update": conversation.last_update} for conversation
+         in conversations]), 200 
+
 
 
 
