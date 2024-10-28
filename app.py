@@ -5,15 +5,13 @@ from datetime import timezone
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy_utils import database_exists, create_database
-from  sqlalchemy.sql.expression import func, select
+from sqlalchemy.sql.expression import func, select
 from flask_cors import CORS
-# import random
-from flask_cors import CORS
-# CORS
+
 app = Flask(__name__)
 CORS(app)
 
-C_PORT = 8000
+C_PORT = 5000
 
 # Use the existing database
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://admin:Wfe._84ivN3UX4j.X2z!dfKnAiRA@content-database-1.c1qcm4w2sbne.us-east-1.rds.amazonaws.com:3306/conversation_db'
@@ -25,8 +23,8 @@ class Conversation(db.Model):
     __tablename__ = 'conversation'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     user_id = db.Column(db.Integer, nullable=False)
-    start_date = db.Column(db.DateTime(timezone=True), default = func.now(), nullable=False)
-    last_update = db.Column(db.DateTime(timezone=True), default = func.now(), onupdate=func.now(), nullable=False)
+    start_date = db.Column(db.DateTime(timezone=True), default=func.now(), nullable=False)
+    last_update = db.Column(db.DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
     reply = db.Column(db.String, nullable=True)
 
     def to_dict(self):
@@ -47,14 +45,12 @@ def custom_404(error):
     return jsonify({"error": "Resource not found"}), 404
 
 @app.errorhandler(400)
-def custom_404(error):
-    # Default 404 handler for other endpoints
+def custom_400(error):
+    # Default 400 handler for other endpoints
     return jsonify({"error": "Bad Request"}), 400
-
 
 @app.route('/api/convos/random', methods=['GET'])
 def get_convos():
-
     # Get 10 random conversations
     conversations = Conversation.query.order_by(func.random()).limit(10)
 
@@ -69,13 +65,12 @@ def get_convos():
                 "id": conversation.id,
                 "user_id": conversation.user_id,
                 "start_date": conversation.start_date,
-                "last_update": conversation.last_update
+                "last_update": conversation.last_update,
                 "reply": conversation.reply
             }
             for conversation in conversations
         ],
-    }
-    ), 200
+    }), 200
 
 @app.route('/api/convos', methods=['GET'])
 def get_convos_by_user_id():
@@ -96,13 +91,12 @@ def get_convos_by_user_id():
     except ValueError:
         return jsonify({"error": "user_id must be a valid integer"}), 400
 
-
     # Get pagination parameters from the query string, defaulting to page 1 and 10 results per page
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 10, type=int)
 
     # Get all conversations made by user_id
-    convos_pages = (Conversation.query.filter_by(user_id = user_id)
+    convos_pages = (Conversation.query.filter_by(user_id=user_id)
                     .order_by(Conversation.start_date.desc())
                     .paginate(page=page, per_page=per_page, error_out=False))
 
@@ -114,7 +108,7 @@ def get_convos_by_user_id():
 
     # Return all conversations made by user_id in a page
     return jsonify({
-        "conversations" : [
+        "conversations": [
             {
                 "id": conversation.id,
                 "user_id": conversation.user_id,
@@ -128,35 +122,32 @@ def get_convos_by_user_id():
         "per_page": convos_pages.per_page,
         "total_pages": convos_pages.pages,
         "total_items": convos_pages.total,
-        }
-    ), 200
+    }), 200
 
 @app.route('/api/convos/<int:id>/messages', methods=['GET'])
 def get_convos_by_id(id):
     # Fetch conversation by id
-    conversations = Conversation.query.get(id=id)
+    conversation = Conversation.query.get(id=id)
 
     # Check if it exists
-    if conversations is None:
+    if conversation is None:
         return jsonify({"error": f"No conversation found for id {id}"}), 404
 
     # Return conversation
     return jsonify({
         "conversations": [
             {
-                "id": conversations.id,
-                "user_id": conversations.user_id,
-                "start_date": conversations.start_date,
-                "last_update": conversations.last_update
-                "reply": conversations.reply
+                "id": conversation.id,
+                "user_id": conversation.user_id,
+                "start_date": conversation.start_date,
+                "last_update": conversation.last_update,
+                "reply": conversation.reply
             }
         ],
-    }
-    ), 200
+    }), 200
 
 @app.route('/api/convos/<int:id>', methods=['DELETE'])
 def delete_convos_by_msg_id(id):
-
     # Get conversation by id
     conversation = Conversation.query.get(id=id)
 
@@ -172,7 +163,6 @@ def delete_convos_by_msg_id(id):
 
 @app.route('/api/convos/<int:id>', methods=['PUT'])
 def add_reply_to_conversation(id):
-
     # Check if 'reply' is provided in the request body
     if not request.json or 'reply' not in request.json:
         return jsonify({"error": "No reply provided"}), 400
@@ -191,7 +181,7 @@ def add_reply_to_conversation(id):
         logging.info(f"Added reply to conversation with id {id}")
     except Exception as e:
         logging.error(f"Failed to add reply to conversation with id {id}: {e}")
-        return jsonify({"error": f"Failed to add reply to conversation"}), 500
+        return jsonify({"error": "Failed to add reply to conversation"}), 500
 
     # Updated conversation returned
     return jsonify({
@@ -201,13 +191,12 @@ def add_reply_to_conversation(id):
 
 @app.route('/api/convos', methods=['POST'])
 def create_convo():
-
     # Checks if 'conversation' is in the request
     if not request.json or 'conversation' not in request.json:
         return jsonify({"error": "No conversation provided"}), 400
 
-    conversation = request.json['conversation']
-    user_id = conversation.get('user_id')
+    conversation_data = request.json['conversation']
+    user_id = conversation_data.get('user_id')
 
     # Check if user_id exists
     if not user_id:
@@ -222,7 +211,7 @@ def create_convo():
     # Create conversation out of given information
     try:
         conversation = Conversation(
-            user_id = user_id
+            user_id=user_id
         )
         db.session.add(conversation)
         db.session.commit()
@@ -236,8 +225,6 @@ def create_convo():
         'message': 'Conversation successfully created',
         'conversation': conversation.to_dict(),
     }), 201
-
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=C_PORT)
