@@ -19,6 +19,9 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S', filename='app.log')
+
 class SenderType(Enum):
     user = 'user'
     ai = 'ai'
@@ -64,6 +67,7 @@ class Message(db.Model):
 @app.route('/api/convos', methods=['POST'])
 def create_convo():
     if not request.json:
+        logging.warning("No data provided in request")
         return jsonify({"error": "No data provided"}), 400
 
     data = request.json
@@ -71,6 +75,7 @@ def create_convo():
     initial_message = data.get('message')
 
     if not user_id or not initial_message:
+        logging.warning("user_id and message are required")
         return jsonify({"error": "user_id and message are required"}), 400
 
     try:
@@ -88,6 +93,7 @@ def create_convo():
         db.session.add(message)
         db.session.commit()
 
+        logging.info(f"Conversation created successfully with ID: {conversation.id}")
         return jsonify({
             'message': 'Conversation created successfully',
             'conversation': conversation.to_dict()
@@ -105,6 +111,7 @@ def get_convos():
     random = request.args.get('random', 'false').lower() == 'true'
 
     if not user_id:
+        logging.warning("user_id is required")
         return jsonify({"error": "user_id is required"}), 400
 
     try:
@@ -115,6 +122,7 @@ def get_convos():
         else:
             conversations = query.order_by(Conversation.id.desc()).limit(limit).all()
 
+        logging.info(f"Fetched {len(conversations)} conversations for user_id: {user_id}")
         return jsonify({
             "conversations": [conv.to_dict() for conv in conversations]
         }), 200
@@ -126,6 +134,7 @@ def get_convos():
 @app.route('/api/convos/<int:conversation_id>/reply', methods=['PUT'])
 def add_reply(conversation_id):  # Add the parameter here
     if not request.json or 'message' not in request.json:
+        logging.warning("message is required")
         return jsonify({"error": "message is required"}), 400
 
     message_text = request.json['message']
@@ -133,6 +142,7 @@ def add_reply(conversation_id):  # Add the parameter here
     try:
         conversation = db.session.get(Conversation, conversation_id)
         if not conversation:
+            logging.warning(f"Conversation not found: {conversation_id}")
             return jsonify({"error": "Conversation not found"}), 404
 
         message = Message(
@@ -147,6 +157,7 @@ def add_reply(conversation_id):  # Add the parameter here
         
         db.session.commit()
 
+        logging.info(f"Reply added successfully to conversation ID: {conversation_id}")
         return jsonify({
             "message": "Reply added successfully",
             "conversation": conversation.to_dict()
@@ -162,11 +173,13 @@ def delete_conversation(conversation_id):
     try:
         conversation = db.session.get(Conversation, conversation_id)
         if not conversation:
+            logging.warning(f"Conversation not found for deletion: {conversation_id}")
             return jsonify({"error": "Conversation not found"}), 404
 
         db.session.delete(conversation)
         db.session.commit()
 
+        logging.info(f"Conversation {conversation_id} deleted successfully")
         return jsonify({
             "message": f"Conversation {conversation_id} deleted successfully"
         }), 200
