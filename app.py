@@ -20,7 +20,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S', filename='app.log')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 class SenderType(Enum):
     user = 'user'
@@ -64,6 +64,40 @@ class Message(db.Model):
             'timestamp': self.timestamp
         }
 
+def add_links(response_data, endpoint, **params):
+    """Add HATEOAS links to response"""
+    base_url = "/api/convos"
+    
+    if endpoint == 'create':
+        conversation = response_data.get('conversation', {})
+        conv_id = conversation.get('id')
+        response_data['_links'] = {
+            'self': base_url,
+            'reply': f"{base_url}/{conv_id}/reply",
+            'delete': f"{base_url}/{conv_id}"
+        }
+    
+    elif endpoint == 'list':
+        response_data['_links'] = {
+            'self': f"{base_url}?user_id={params.get('user_id')}",
+            'create': base_url
+        }
+    
+    elif endpoint == 'reply':
+        conv_id = params.get('conversation_id')
+        response_data['_links'] = {
+            'self': f"{base_url}/{conv_id}/reply",
+            'conversation': f"{base_url}/{conv_id}"
+        }
+    
+    elif endpoint == 'delete':
+        response_data['_links'] = {
+            'conversations': base_url
+        }
+    
+    return response_data
+
+
 @app.route('/api/convos', methods=['POST'])
 def create_convo():
     if not request.json:
@@ -94,10 +128,11 @@ def create_convo():
         db.session.commit()
 
         logging.info(f"Conversation created successfully with ID: {conversation.id}")
-        return jsonify({
+        response_data = {
             'message': 'Conversation created successfully',
             'conversation': conversation.to_dict()
-        }), 201
+        }
+        return jsonify(add_links(response_data, 'create')), 201
 
     except Exception as e:
         db.session.rollback()
@@ -123,9 +158,10 @@ def get_convos():
             conversations = query.order_by(Conversation.id.desc()).limit(limit).all()
 
         logging.info(f"Fetched {len(conversations)} conversations for user_id: {user_id}")
-        return jsonify({
+        response_data = {
             "conversations": [conv.to_dict() for conv in conversations]
-        }), 200
+        }
+        return jsonify(add_links(response_data, 'list', user_id=user_id)), 200
 
     except Exception as e:
         logging.error(f"Error fetching conversations: {e}")
@@ -158,10 +194,11 @@ def add_reply(conversation_id):  # Add the parameter here
         db.session.commit()
 
         logging.info(f"Reply added successfully to conversation ID: {conversation_id}")
-        return jsonify({
+        response_data = {
             "message": "Reply added successfully",
             "conversation": conversation.to_dict()
-        }), 200
+        }
+        return jsonify(add_links(response_data, 'reply', conversation_id=conversation_id)), 200
 
     except Exception as e:
         db.session.rollback()
@@ -180,9 +217,10 @@ def delete_conversation(conversation_id):
         db.session.commit()
 
         logging.info(f"Conversation {conversation_id} deleted successfully")
-        return jsonify({
+        response_data = {
             "message": f"Conversation {conversation_id} deleted successfully"
-        }), 200
+        }
+        return jsonify(add_links(response_data, 'delete')), 200
 
     except Exception as e:
         db.session.rollback()
