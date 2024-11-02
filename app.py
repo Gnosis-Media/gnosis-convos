@@ -10,6 +10,7 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
+app.config['DEBUG'] = True
 
 C_PORT = 5000
 
@@ -106,11 +107,12 @@ def create_convo():
 
     data = request.json
     user_id = data.get('user_id')
-    initial_message = data.get('message')
+    message_text = data.get('message_text')
+    content_chunk_id = data.get('content_chunk_id')
 
-    if not user_id or not initial_message:
-        logging.warning("user_id and message are required")
-        return jsonify({"error": "user_id and message are required"}), 400
+    if not user_id or not message_text or not content_chunk_id:
+        logging.warning("user_id, message_text, and content_chunk_id are required")
+        return jsonify({"error": "user_id, message_text, and content_chunk_id are required"}), 400
 
     try:
         # Create conversation
@@ -122,7 +124,8 @@ def create_convo():
         message = Message(
             conversation_id=conversation.id,
             sender=SenderType.ai,
-            message_text=initial_message
+            message_text=message_text,
+            content_chunk_id=content_chunk_id
         )
         db.session.add(message)
         db.session.commit()
@@ -225,7 +228,7 @@ def delete_conversation(conversation_id):
     except Exception as e:
         db.session.rollback()
         logging.error(f"Error deleting conversation: {e}")
-        return jsonify({"error": "Failed to delete conversation"}), 500
+        return jsonify({"error": "Failed to delete conversation"}), 500 
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=C_PORT)
