@@ -7,6 +7,7 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql.expression import func
 from flask_cors import CORS
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -33,6 +34,7 @@ class Conversation(db.Model):
     user_id = db.Column(db.Integer, nullable=False)
     start_date = db.Column(db.DateTime(timezone=True), default=func.now(), nullable=False)
     last_update = db.Column(db.DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    content_id = db.Column(db.Integer, nullable=False)
     messages = db.relationship('Message', backref='conversation', lazy=True, cascade='all, delete-orphan')
 
     def to_dict(self, include_messages=True):
@@ -107,35 +109,36 @@ def create_convo():
 
     data = request.json
     user_id = data.get('user_id')
-    message_text = data.get('message_text')
+    content_id = data.get('content_id')
     content_chunk_id = data.get('content_chunk_id')
 
-    if not user_id or not message_text or not content_chunk_id:
-        logging.warning("user_id, message_text, and content_chunk_id are required")
-        return jsonify({"error": "user_id, message_text, and content_chunk_id are required"}), 400
+    if not user_id or not content_id:
+        logging.warning("user_id and content_id are required")
+        return jsonify({"error": "user_id and content_id are required"}), 400
 
     try:
         # Create conversation
-        conversation = Conversation(user_id=user_id)
+        conversation = Conversation(user_id=user_id, content_id=content_id)
         db.session.add(conversation)
         db.session.flush()  # Flush to get the conversation ID
-
-        # Create initial AI message
-        message = Message(
-            conversation_id=conversation.id,
-            sender=SenderType.ai,
-            message_text=message_text,
-            content_chunk_id=content_chunk_id
-        )
-        db.session.add(message)
         db.session.commit()
+
+        # Nudge gnosis-influencer to update the conversation
+        influencer_response = requests.post(
+            'http://localhost:5012/api/message/ai',
+            json={'conversation_id': conversation.id, 'content_chunk_id': content_chunk_id}
+            # Notice the inclusion of chunk_id, makes it so that it has a chunk to start the conversation
+        )
+
+        if influencer_response.status_code not in [200, 202]:
+            logging.warning(f"gnosis-influencer responded with status code {influencer_response.status_code}")
 
         logging.info(f"Conversation created successfully with ID: {conversation.id}")
         response_data = {
             'message': 'Conversation created successfully',
-            'conversation': conversation.to_dict()
+            'conversation_id': conversation.id
         }
-        return jsonify(add_links(response_data, 'create')), 201
+        return jsonify(response_data), 201
 
     except Exception as e:
         db.session.rollback()
@@ -170,6 +173,19 @@ def get_convos():
         logging.error(f"Error fetching conversations: {e}")
         return jsonify({"error": "Failed to fetch conversations"}), 500
 
+# Get a conversation by id
+@app.route('/api/convos/<int:conversation_id>', methods=['GET'])
+def get_conversation(conversation_id):
+    try:
+        conversation = db.session.get(Conversation, conversation_id)
+        if not conversation:
+            logging.warning(f"Conversation not found: {conversation_id}")
+            return jsonify({"error": "Conversation not found"}), 404
+        return jsonify(conversation.to_dict()), 200
+    except Exception as e:
+        logging.error(f"Error fetching conversation: {e}")
+        return jsonify({"error": "Failed to fetch conversation"}), 500
+
 @app.route('/api/convos/<int:conversation_id>/reply', methods=['PUT'])
 def add_reply(conversation_id):  # Add the parameter here
     if not request.json or 'message' not in request.json:
@@ -190,11 +206,21 @@ def add_reply(conversation_id):  # Add the parameter here
             message_text=message_text
         )
         db.session.add(message)
+        db.session.flush()
+        db.session.commit()
         
         # Update conversation last_update
         conversation.last_update = func.now()
         
         db.session.commit()
+
+        # Nudge the influencer api with the conversation_id to get a reply
+        influencer_response = requests.post(
+            'http://localhost:5012/api/message/ai',
+            json={'conversation_id': conversation_id}
+        )
+
+        logging.info(f"Nudged influencer with status code: {influencer_response.status_code}")
 
         logging.info(f"Reply added successfully to conversation ID: {conversation_id}")
         response_data = {
