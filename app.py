@@ -28,6 +28,7 @@ INFLUENCER_API_URL = secrets.get('INFLUENCER_API_URL')
 PROFILES_API_URL = secrets.get('PROFILES_API_URL')
 CONTENT_PROCESSOR_API_URL = secrets.get('CONTENT_PROCESSOR_API_URL')
 CONVERSATION_API_URL = secrets.get('CONVERSATION_API_URL', 'http://localhost:5000')
+API_KEY = secrets.get('API_KEY')
 
 C_PORT = int(secrets.get('PORT', 5000))
 
@@ -255,8 +256,8 @@ def create_convo():
         # Nudge gnosis-influencer to update the conversation
         influencer_response = requests.post(
             f"{INFLUENCER_API_URL}/api/message/ai",
-            json={'conversation_id': conversation.id, 'content_chunk_id': content_chunk_id}
-            # Notice the inclusion of chunk_id, makes it so that it has a chunk to start the conversation
+            json={'conversation_id': conversation.id, 'content_chunk_id': content_chunk_id},
+            headers={'X-API-KEY': API_KEY}
         )
 
         if influencer_response.status_code not in [200, 202]:
@@ -285,7 +286,10 @@ def create_batch_convos():
 
     try:
         # Fetch all content_ids associated with the user
-        content_ids = requests.get(f"{CONTENT_PROCESSOR_API_URL}/api/content_ids?user_id={user_id}").json()
+        content_ids = requests.get(
+            f"{CONTENT_PROCESSOR_API_URL}/api/content_ids?user_id={user_id}",
+            headers={'X-API-KEY': API_KEY}
+        ).json()
         # logging.info(f"Content IDs: {content_ids}")
         if not content_ids:
             logging.warning(f"No content found for user_id: {user_id}")
@@ -294,7 +298,10 @@ def create_batch_convos():
         # Get content chunks for each content_id
         content_chunks = []
         for content_id in content_ids:
-            chunks_response = requests.get(f"{CONTENT_PROCESSOR_API_URL}/api/content/{content_id}/chunks")
+            chunks_response = requests.get(
+                f"{CONTENT_PROCESSOR_API_URL}/api/content/{content_id}/chunks",
+                headers={'X-API-KEY': API_KEY}
+            )
             # logging.info(f"Chunks response: {chunks_response.json()}")
             if chunks_response.status_code == 200:
                 # Access the 'chunks' key from the response
@@ -332,7 +339,8 @@ def create_batch_convos():
                 f"'user_id': {user_id}, "
                 f"'content_id': {chunk['content_id']}, "
                 f"'content_chunk_id': {chunk['chunk_id']}"
-                f"}})"
+                f"}}, "
+                f"headers={{'X-API-KEY': '{API_KEY}'}})"
             ])
 
         logging.info(f"Batch conversation creation initiated for user_id: {user_id}")
@@ -388,7 +396,10 @@ def get_convos():
             # Check if we already have the AI profile for this content_id
             if conv.content_id not in ai_profile_cache:
                 # Only fetch if not in cache
-                ai_response = requests.get(f"{PROFILES_API_URL}/api/ais/content/{conv.content_id}")
+                ai_response = requests.get(
+                    f"{PROFILES_API_URL}/api/ais/content/{conv.content_id}",
+                    headers={'X-API-KEY': API_KEY}
+                )
                 ai_profile = {}
                 if ai_response.status_code == 200:
                     ai_data = ai_response.json()
@@ -412,7 +423,8 @@ def get_convos():
         if refresh and not cursor:
             requests.post(
                 f"{CONVERSATION_API_URL}/api/convos/batch", 
-                json={'user_id': user_id, 'num_convos': 5}
+                json={'user_id': user_id, 'num_convos': 5},
+                headers={'X-API-KEY': API_KEY}
             )
 
         response_data = {
@@ -470,7 +482,8 @@ def add_reply(conversation_id):  # Add the parameter here
         # Nudge the influencer api with the conversation_id to get a reply
         influencer_response = requests.post(
             f"{INFLUENCER_API_URL}/api/message/ai",
-            json={'conversation_id': conversation_id}
+            json={'conversation_id': conversation_id},
+            headers={'X-API-KEY': API_KEY}
         )
 
         logging.info(f"Nudged influencer with status code: {influencer_response.status_code}")
@@ -523,7 +536,8 @@ def shuffle_conversations():
         'python', '-c',
         f"import requests; "
         f"requests.post('{CONVERSATION_API_URL}/api/convos/shuffle-helper', "
-        f"json={{'user_id': {user_id}, 'volatility': {volatility}}})"
+        f"json={{'user_id': {user_id}, 'volatility': {volatility}}}, "
+        f"headers={{'X-API-KEY': '{API_KEY}'}})"
     ])
 
     return jsonify({"message": "Shuffle initiated"}), 202  # 202 Accepted indicates the request is being processed
@@ -544,6 +558,24 @@ def shuffle_helper():
         logging.error(f"Error shuffling conversations: {e}")
         return jsonify({"error": "Failed to shuffle conversations"}), 500
 
+
+# add middleware
+@app.before_request
+def log_request_info():
+    logging.info(f"Headers: {request.headers}")
+    logging.info(f"Body: {request.get_data()}")
+
+    # for now just check that it has a Authorization header
+    if 'X-API-KEY' not in request.headers:
+        logging.warning("No X-API-KEY header")
+        return jsonify({'error': 'No X-API-KEY'}), 401
+    
+    x_api_key = request.headers.get('X-API-KEY')
+    if x_api_key != API_KEY:
+        logging.warning("Invalid X-API-KEY")
+        return jsonify({'error': 'Invalid X-API-KEY'}), 401
+    else:
+        return
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=C_PORT)
