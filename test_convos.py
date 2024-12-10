@@ -5,6 +5,10 @@ import time
 # Base URL for the local instance
 BASE_URL = 'http://localhost:5000'
 
+import secrets_manager
+secrets = secrets_manager.get_service_secrets('gnosis-convos')
+API_KEY = secrets.get('API_KEY')
+
 def print_response(response):
     print(f"Status Code: {response.status_code}")
     print("Response:")
@@ -18,7 +22,7 @@ def test_create_conversation():
         "content_id": 1,
         "content_chunk_id": 1
     }
-    response = requests.post(f"{BASE_URL}/api/convos", json=data)
+    response = requests.post(f"{BASE_URL}/api/convos", json=data, headers={'X-API-KEY': API_KEY})
     print_response(response)
     return response.json().get('conversation_id') if response.status_code == 201 else None
 
@@ -28,7 +32,7 @@ def test_create_batch_conversations():
         "user_id": 1,
         "num_convos": 5
     }
-    response = requests.post(f"{BASE_URL}/api/convos/batch", json=data)
+    response = requests.post(f"{BASE_URL}/api/convos/batch", json=data, headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 def test_get_conversations():
@@ -38,17 +42,17 @@ def test_get_conversations():
         "limit": 5,
         "random": "false"
     }
-    response = requests.get(f"{BASE_URL}/api/convos", params=params)
+    response = requests.get(f"{BASE_URL}/api/convos", params=params, headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 def test_get_random_conversations():
     print("Testing GET /api/convos - Get random conversations")
     params = {
         "user_id": 1,
-        "limit": 5,
+        "limit": 1,
         "random": "true"
     }
-    response = requests.get(f"{BASE_URL}/api/convos", params=params)
+    response = requests.get(f"{BASE_URL}/api/convos", params=params, headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 def test_add_reply(conversation_id):
@@ -56,12 +60,12 @@ def test_add_reply(conversation_id):
     data = {
         "message": "This is a test reply from the user"
     }
-    response = requests.put(f"{BASE_URL}/api/convos/{conversation_id}/reply", json=data)
+    response = requests.put(f"{BASE_URL}/api/convos/{conversation_id}/reply", json=data, headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 def test_delete_conversation(conversation_id):
     print(f"Testing DELETE /api/convos/{conversation_id} - Delete conversation")
-    response = requests.delete(f"{BASE_URL}/api/convos/{conversation_id}")
+    response = requests.delete(f"{BASE_URL}/api/convos/{conversation_id}", headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 def test_get_conversations_with_pagination():
@@ -72,7 +76,7 @@ def test_get_conversations_with_pagination():
         "user_id": 4,
         "limit": 2  # Small limit to test pagination
     }
-    response = requests.get(f"{BASE_URL}/api/convos", params=params)
+    response = requests.get(f"{BASE_URL}/api/convos", params=params, headers={'X-API-KEY': API_KEY})
     print("First page:")
     print_response(response)
     
@@ -83,7 +87,7 @@ def test_get_conversations_with_pagination():
     
     while next_cursor and page_count < 5:  # Limit to 5 pages for testing
         params['cursor'] = next_cursor
-        response = requests.get(f"{BASE_URL}/api/convos", params=params)
+        response = requests.get(f"{BASE_URL}/api/convos", params=params, headers={'X-API-KEY': API_KEY})
         print(f"Page {page_count + 1}:")
         print_response(response)
         
@@ -105,7 +109,7 @@ def test_refresh_conversations():
         "limit": 5,
         "refresh": "true"
     }
-    response = requests.get(f"{BASE_URL}/api/convos", params=params)
+    response = requests.get(f"{BASE_URL}/api/convos", params=params, headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 def test_shuffle_scores():
@@ -114,7 +118,7 @@ def test_shuffle_scores():
         "user_id": 4,
         "volatility": 0.9
     }
-    response = requests.post(f"{BASE_URL}/api/convos/shuffle", json=data)
+    response = requests.post(f"{BASE_URL}/api/convos/shuffle", json=data, headers={'X-API-KEY': API_KEY})
     print_response(response)
 
 if __name__ == "__main__":
@@ -124,27 +128,23 @@ if __name__ == "__main__":
     # Create a conversation and get its ID
     # conversation_id = test_create_conversation()
     
-    
     # Test batch creation
-    # test_create_batch_conversations()
+    test_create_batch_conversations()
     
     # Wait a moment for batch operations to complete
-    # time.sleep(2)
-    
-    # time.sleep(2)
+    time.sleep(2)
 
-    # Test pagination
-    test_get_conversations_with_pagination()
+    # # Test pagination
+    # test_get_conversations_with_pagination()
 
     # # Test refresh functionality
     # test_refresh_conversations()
     
-    # Test reply
+    # # Test reply
     # test_add_reply(458)
 
-    # Test shuffle
+    # # Test shuffle
     # test_shuffle_scores()
     
-    # Test deletion
-    # test_delete_conversation(conversation_id)        
-   
+    # # Test deletion
+    # test_delete_conversation(1011)        

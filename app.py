@@ -16,10 +16,38 @@ from secrets_manager import get_service_secrets
 from base64 import b64encode, b64decode
 import json
 from datetime import datetime
+from flask_restx import Api, Resource, fields, Namespace
 
 app = Flask(__name__)
 CORS(app)
 app.config['DEBUG'] = True
+
+# Add this before initializing the Api
+class CustomJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        try:
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            return super().default(obj)
+        except TypeError:
+            return str(obj)
+
+# Initialize Flask-RESTX
+api = Api(app,
+    version='1.0',
+    title='Gnosis Conversations API',
+    description='API for managing conversations with AI',
+    doc='/docs'
+)
+
+ns = api.namespace('api/convos', description='Conversation operations')
+
+# Add this after Api initialization
+@api.representation('application/json')
+def output_json(data, code, headers=None):
+    resp = app.make_response(json.dumps(data, cls=CustomJSONEncoder))
+    resp.headers.extend(headers or {})
+    return resp
 
 secrets = get_service_secrets('gnosis-convos')
 
@@ -59,8 +87,29 @@ def decode_cursor(cursor_str):
         return json.loads(b64decode(cursor_str).decode())
     except:
         return None
-    
 
+# Define models for request/response
+create_convo_model = api.model('CreateConversation', {
+    'user_id': fields.Integer(required=True),
+    'content_id': fields.Integer(required=True),
+    'content_chunk_id': fields.Integer(required=False)
+})
+
+batch_convo_model = api.model('BatchCreateConversation', {
+    'user_id': fields.Integer(required=True),
+    'num_convos': fields.Integer(required=False, default=10)
+})
+
+reply_model = api.model('Reply', {
+    'message': fields.String(required=True)
+})
+
+shuffle_model = api.model('Shuffle', {
+    'user_id': fields.Integer(required=True),
+    'volatility': fields.Float(required=False, default=0.5)
+})
+
+# Keep all your existing model classes (Conversation, Message) exactly as they are
 class Conversation(db.Model):
     __tablename__ = 'conversation'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
@@ -84,9 +133,6 @@ class Conversation(db.Model):
         if self.start_date is None:
             self.start_date = now
             db.session.commit()
-        
-        # logging.info(f"Start date: {self.start_date}")
-        # logging.info(f"Now: {now}")
 
         age_in_hours = (now - self.start_date).total_seconds() / 3600
         age_score = 1.0 / (1.0 + age_in_hours/24)  # Decay over days
@@ -103,26 +149,16 @@ class Conversation(db.Model):
     @classmethod
     def shuffle_scores(cls, user_id, volatility=0.3):
         """Shuffle scores for all user's conversations with controlled volatility"""
-        # Get all conversations in a single query with only necessary columns
         conversations = cls.query.filter_by(user_id=user_id).all()
         
-        # logging.info(f"Conversations: {conversations}")
-
-        # Prepare bulk updates
         max_id = max(conv.id for conv in conversations)
         updates = []
         
         logging.info("Starting score calculation")
-        # Calculate all scores in memory
         for conv in conversations:
-            # Base score from ID (0.1 to 1.0) - newer conversations get higher base scores
             base_score = (1 - volatility) * (conv.id / max_id)
-            
-            # Add significant randomness
             random_value = random.gauss(0, volatility)
             new_score = base_score + random_value * volatility
-            
-            # Ensure score stays within reasonable bounds
             new_score = max(0.01, new_score)
             
             updates.append({
@@ -132,7 +168,6 @@ class Conversation(db.Model):
         
         logging.info(f"Finished score calculation")
         
-        # Perform bulk update in a single transaction
         if updates:
             stmt = cls.__table__.update().\
                 where(cls.__table__.c.id == db.bindparam('conv_id')).\
@@ -161,17 +196,6 @@ class Conversation(db.Model):
             'id': self.id,
             'last_update': self.last_update.isoformat()
         }    
-
-def encode_cursor(cursor_dict):
-    """Encode cursor dictionary to base64 string"""
-    return b64encode(json.dumps(cursor_dict).encode()).decode()
-
-def decode_cursor(cursor_str):
-    """Decode base64 cursor string to dictionary"""
-    try:
-        return json.loads(b64decode(cursor_str).decode())
-    except:
-        return None
 
 class Message(db.Model):
     __tablename__ = 'message'
@@ -225,355 +249,368 @@ def add_links(response_data, endpoint, **params):
     
     return response_data
 
+@ns.route('')
+class ConversationListResource(Resource):
+    @api.doc('create_conversation')
+    @api.expect(create_convo_model)
+    def post(self):
+        if not request.json:
+            logging.warning("No data provided in request")
+            return {"error": "No data provided"}, 400
 
-@app.route('/api/convos', methods=['POST'])
-def create_convo():
-    if not request.json:
-        logging.warning("No data provided in request")
-        return jsonify({"error": "No data provided"}), 400
+        data = request.json
+        user_id = data.get('user_id')
+        content_id = data.get('content_id')
+        content_chunk_id = data.get('content_chunk_id')
 
-    data = request.json
-    user_id = data.get('user_id')
-    content_id = data.get('content_id')
-    content_chunk_id = data.get('content_chunk_id')
+        if not user_id or not content_id:
+            logging.warning("user_id and content_id are required")
+            return {"error": "user_id and content_id are required"}, 400
 
-    if not user_id or not content_id:
-        logging.warning("user_id and content_id are required")
-        return jsonify({"error": "user_id and content_id are required"}), 400
-
-    try:
-        # Create conversation
-        conversation = Conversation(
-            user_id=user_id, 
-            content_id=content_id
-        )
-        conversation.update_score(randomness_factor=0.2)
-
-        db.session.add(conversation)
-        db.session.flush()  # Flush to get the conversation ID
-        db.session.commit()
-
-        # Nudge gnosis-influencer to update the conversation
-        influencer_response = requests.post(
-            f"{INFLUENCER_API_URL}/api/message/ai",
-            json={'conversation_id': conversation.id, 'content_chunk_id': content_chunk_id},
-            headers={'X-API-KEY': API_KEY}
-        )
-
-        if influencer_response.status_code not in [200, 202]:
-            logging.warning(f"gnosis-influencer responded with status code {influencer_response.status_code}")
-
-        logging.info(f"Conversation created successfully with ID: {conversation.id}")
-        response_data = {
-            'message': 'Conversation created successfully',
-            'conversation_id': conversation.id
-        }
-        return jsonify(response_data), 201
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error creating conversation: {e}")
-        return jsonify({"error": "Failed to create conversation"}), 500
-
-@app.route('/api/convos/batch', methods=['POST'])
-def create_batch_convos():
-    if not request.json or 'user_id' not in request.json:
-        logging.warning("user_id is required")
-        return jsonify({"error": "user_id is required"}), 400
-
-    user_id = request.json['user_id']
-    num_convos = request.json.get('num_convos', 10)  # Default to 10 if not specified
-
-    try:
-        # Fetch all content_ids associated with the user
-        content_ids = requests.get(
-            f"{CONTENT_PROCESSOR_API_URL}/api/content_ids?user_id={user_id}",
-            headers={'X-API-KEY': API_KEY}
-        ).json()
-        # logging.info(f"Content IDs: {content_ids}")
-        if not content_ids:
-            logging.warning(f"No content found for user_id: {user_id}")
-            return jsonify({"error": "No content found for user"}), 404
-
-        # Get content chunks for each content_id
-        content_chunks = []
-        for content_id in content_ids:
-            chunks_response = requests.get(
-                f"{CONTENT_PROCESSOR_API_URL}/api/content/{content_id}/chunks",
-                headers={'X-API-KEY': API_KEY}
+        try:
+            conversation = Conversation(
+                user_id=user_id, 
+                content_id=content_id
             )
-            # logging.info(f"Chunks response: {chunks_response.json()}")
-            if chunks_response.status_code == 200:
-                # Access the 'chunks' key from the response
-                chunks = chunks_response.json().get('chunks', [])
-                content_chunks.extend([{
-                    'content_id': content_id,
-                    'chunk_id': chunk['id']
-                } for chunk in chunks])
+            conversation.update_score(randomness_factor=0.2)
 
-        if not content_chunks:
-            logging.warning(f"No content chunks found for available content")
-            return jsonify({"error": "No content chunks found"}), 404
+            db.session.add(conversation)
+            db.session.flush()
+            db.session.commit()
 
-        # Filter chunks that don't already have a conversation
-        available_chunks = [
-            chunk for chunk in content_chunks 
-            if not Message.query.filter_by(content_chunk_id=chunk['chunk_id']).first()
-        ]
-        # logging.info(f"Available chunks: {available_chunks}")
+            headers = {'X-API-KEY': API_KEY}
+            correlation_id = request.headers.get('X-Correlation-ID')
+            if correlation_id:
+                headers['X-Correlation-ID'] = correlation_id
 
-        if not available_chunks:
-            logging.warning(f"No available chunks found for user_id: {user_id}")
-            return jsonify({"error": "No available chunks found for user"}), 404
+            influencer_response = requests.post(
+                f"{INFLUENCER_API_URL}/api/message/ai",
+                json={'conversation_id': conversation.id, 'content_chunk_id': content_chunk_id},
+                headers=headers
+            )
 
-        # Select a random set of content chunks
-        selected_chunks = random.sample(available_chunks, min(num_convos, len(available_chunks)))
-        logging.info(f"Selected chunks: {selected_chunks}")
-        # Create subprocesses to make HTTP requests to itself
-        for chunk in selected_chunks:
-            subprocess.Popen([
-                'python', '-c',
-                f"import requests; "
-                f"requests.post('{CONVERSATION_API_URL}/api/convos', "
-                f"json={{"
-                f"'user_id': {user_id}, "
-                f"'content_id': {chunk['content_id']}, "
-                f"'content_chunk_id': {chunk['chunk_id']}"
-                f"}}, "
-                f"headers={{'X-API-KEY': '{API_KEY}'}})"
-            ])
+            if influencer_response.status_code not in [200, 202]:
+                logging.warning(f"gnosis-influencer responded with status code {influencer_response.status_code}")
 
-        logging.info(f"Batch conversation creation initiated for user_id: {user_id}")
-        return jsonify({"message": "Request received"}), 202
+            logging.info(f"Conversation created successfully with ID: {conversation.id}")
+            response_data = {
+                'message': 'Conversation created successfully',
+                'conversation_id': conversation.id
+            }
+            return response_data, 201
 
-    except Exception as e:
-        logging.error(f"Error creating batch conversations: {e}")
-        return jsonify({"error": "Failed to create batch conversations"}), 500
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f"Error creating conversation: {e}")
+            return {"error": "Failed to create conversation"}, 500
 
-@app.route('/api/convos', methods=['GET'])
-def get_convos():
-    user_id = request.args.get('user_id')
-    limit = request.args.get('limit', 20, type=int)
-    cursor = request.args.get('cursor')
-    refresh = request.args.get('refresh', 'false').lower() == 'true'
+    @api.doc('list_conversations')
+    def get(self):
+        user_id = request.args.get('user_id')
+        limit = request.args.get('limit', 20, type=int)
+        cursor = request.args.get('cursor')
+        refresh = request.args.get('refresh', 'false').lower() == 'true'
 
-    if not user_id:
-        logging.warning("user_id is required")
-        return jsonify({"error": "user_id is required"}), 400
+        if not user_id:
+            logging.warning("user_id is required")
+            return {"error": "user_id is required"}, 400
 
-    try:
-        # Base query
-        query = Conversation.query.filter_by(user_id=user_id)
+        try:
+            query = Conversation.query.filter_by(user_id=user_id)
 
-        # Apply cursor-based pagination
-        if cursor:
-            cursor_data = decode_cursor(cursor)
-            if cursor_data:
-                # Get conversations with lower or equal score, but for equal scores
-                # use ID to ensure consistent ordering
-                query = query.filter(
-                    (Conversation.score < cursor_data['score']) |
-                    ((Conversation.score == cursor_data['score']) & 
-                     (Conversation.id < cursor_data['id']))
-                )
+            if cursor:
+                cursor_data = decode_cursor(cursor)
+                if cursor_data:
+                    query = query.filter(
+                        (Conversation.score < cursor_data['score']) |
+                        ((Conversation.score == cursor_data['score']) & 
+                         (Conversation.id < cursor_data['id']))
+                    )
 
-        # Order by score (descending) and ID (descending) for consistent pagination
-        conversations = query.order_by(
-            Conversation.score.desc(),
-            Conversation.id.desc()
-        ).limit(limit + 1).all()  # Get one extra to check if there's more
+            conversations = query.order_by(
+                Conversation.score.desc(),
+                Conversation.id.desc()
+            ).limit(limit + 1).all()
 
-        # Check if there are more results
-        has_next = len(conversations) > limit
-        conversations = conversations[:limit]  # Remove the extra item
+            has_next = len(conversations) > limit
+            conversations = conversations[:limit]
 
-        # Fetch AI profiles for each conversation
-        # Create a mapping to cache AI profiles by content_id
-        ai_profile_cache = {}
-        conversation_data = []
-        
-        for conv in conversations:
-            # Check if we already have the AI profile for this content_id
-            if conv.content_id not in ai_profile_cache:
-                # Only fetch if not in cache
-                ai_response = requests.get(
-                    f"{PROFILES_API_URL}/api/ais/content/{conv.content_id}",
+            ai_profile_cache = {}
+            conversation_data = []
+            
+            for conv in conversations:
+                if conv.content_id not in ai_profile_cache:
+                    ai_response = requests.get(
+                        f"{PROFILES_API_URL}/api/ais/content/{conv.content_id}",
+                        headers={'X-API-KEY': API_KEY}
+                    )
+                    ai_profile = {}
+                    if ai_response.status_code == 200:
+                        ai_data = ai_response.json()
+                        ai_profile = {
+                            'display_name': ai_data.get('display_name'),
+                            'name': ai_data.get('name')
+                        }
+                    ai_profile_cache[conv.content_id] = ai_profile
+                
+                conv_dict = conv.to_dict()
+                conv_dict['ai_profile'] = ai_profile_cache[conv.content_id]
+                conversation_data.append(conv_dict)
+
+            next_cursor = None
+            if has_next and conversations:
+                next_cursor = encode_cursor(conversations[-1].cursor_value)
+
+            if refresh and not cursor:
+                requests.post(
+                    f"{CONVERSATION_API_URL}/api/convos/batch", 
+                    json={'user_id': user_id, 'num_convos': 5},
                     headers={'X-API-KEY': API_KEY}
                 )
-                ai_profile = {}
-                if ai_response.status_code == 200:
-                    ai_data = ai_response.json()
-                    ai_profile = {
-                        'display_name': ai_data.get('display_name'),
-                        'name': ai_data.get('name')
-                    }
-                ai_profile_cache[conv.content_id] = ai_profile
+
+            response_data = {
+                "conversations": conversation_data,
+                "next_cursor": next_cursor,
+                "has_next": has_next
+            }
+            return add_links(response_data, 'list', user_id=user_id), 200
+
+        except Exception as e:
+            logging.error(f"Error fetching conversations: {e}")
+            return {"error": "Failed to fetch conversations"}, 500
+
+@ns.route('/batch')
+class BatchConversationResource(Resource):
+    @api.doc('create_batch_conversations')
+    @api.expect(batch_convo_model)
+    def post(self):
+        if not request.json or 'user_id' not in request.json:
+            logging.warning("user_id is required")
+            return {"error": "user_id is required"}, 400
+
+        user_id = request.json['user_id']
+        num_convos = request.json.get('num_convos', 10)
+
+        try:
+            headers = {'X-API-KEY': API_KEY}
+            correlation_id = request.headers.get('X-Correlation-ID')
+            if correlation_id:
+                headers['X-Correlation-ID'] = correlation_id
+
+            content_ids = requests.get(
+                f"{CONTENT_PROCESSOR_API_URL}/api/content_ids?user_id={user_id}",
+                headers=headers
+            ).json()
+
+            if not content_ids:
+                logging.warning(f"No content found for user_id: {user_id}")
+                return {"error": "No content found for user"}, 404
+
+
+            logging.info(f"Content IDs: {content_ids}")
+            content_ids = content_ids.get('content_ids', [])
+            content_chunks = []
+            for content_id in content_ids:
+                logging.info(f"Getting chunks for content_id: {content_id}")
+                logging.info(f"Headers: {headers}")
+                logging.info(f"URL: {CONTENT_PROCESSOR_API_URL}/api/content/{content_id}/chunks")
+                chunks_response = requests.get(
+                    f"{CONTENT_PROCESSOR_API_URL}/api/content/{content_id}/chunks",
+                    headers=headers
+                )
+                logging.info(f"Chunks response: {chunks_response.status_code} - {chunks_response.text}")
+                if chunks_response.status_code == 200:
+                    chunks = chunks_response.json().get('chunks', [])
+                    content_chunks.extend([{
+                        'content_id': content_id,
+                        'chunk_id': chunk['id']
+                    } for chunk in chunks])
+
+            if not content_chunks:
+                logging.warning(f"No content chunks found for available content")
+                return {"error": "No content chunks found"}, 404
+
+            available_chunks = [
+                chunk for chunk in content_chunks 
+                if not Message.query.filter_by(content_chunk_id=chunk['chunk_id']).first()
+            ]
+
+            if not available_chunks:
+                logging.warning(f"No available chunks found for user_id: {user_id}")
+                return {"error": "No available chunks found for user"}, 404
+
+            selected_chunks = random.sample(available_chunks, min(num_convos, len(available_chunks)))
+            logging.info(f"Selected chunks: {selected_chunks}")
+
+            for chunk in selected_chunks:
+                subprocess.Popen([
+                    'python', '-c',
+                    f"import requests; "
+                    f"requests.post('{CONVERSATION_API_URL}/api/convos', "
+                    f"json={{"
+                    f"'user_id': {user_id}, "
+                    f"'content_id': {chunk['content_id']}, "
+                    f"'content_chunk_id': {chunk['chunk_id']}"
+                    f"}}, "
+                    f"headers={{'X-API-KEY': '{API_KEY}'}})"
+                ])
+
+            logging.info(f"Batch conversation creation initiated for user_id: {user_id}")
+            return {"message": "Request received"}, 202
+
+        except Exception as e:
+            logging.error(f"Error creating batch conversations: {e}")
+            return {"error": "Failed to create batch conversations"}, 500
+
+@ns.route('/<int:conversation_id>')
+class ConversationResource(Resource):
+    @api.doc('get_conversation')
+    def get(self, conversation_id):
+        try:
+            conversation = db.session.get(Conversation, conversation_id)
+            if not conversation:
+                logging.warning(f"Conversation not found: {conversation_id}")
+                return {"error": "Conversation not found"}, 404
+            return conversation.to_dict(), 200
+        except Exception as e:
+            logging.error(f"Error fetching conversation: {e}")
+            return {"error": "Failed to fetch conversation"}, 500
+
+    @api.doc('delete_conversation')
+    def delete(self, conversation_id):
+        try:
+            conversation = db.session.get(Conversation, conversation_id)
+            if not conversation:
+                logging.warning(f"Conversation not found for deletion: {conversation_id}")
+                return {"error": "Conversation not found"}, 404
+
+            db.session.delete(conversation)
+            db.session.commit()
+
+            logging.info(f"Conversation {conversation_id} deleted successfully")
+            response_data = {
+                "message": f"Conversation {conversation_id} deleted successfully"
+            }
+            return add_links(response_data, 'delete'), 200
+
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f"Error deleting conversation: {e}")
+            return {"error": "Failed to delete conversation"}, 500
+
+@ns.route('/<int:conversation_id>/reply')
+class ConversationReplyResource(Resource):
+    @api.doc('add_reply')
+    @api.expect(reply_model)
+    def put(self, conversation_id):
+        if not request.json or 'message' not in request.json:
+            logging.warning("message is required")
+            return {"error": "message is required"}, 400
+
+        message_text = request.json['message']
+
+        try:
+            conversation = db.session.get(Conversation, conversation_id)
+            if not conversation:
+                logging.warning(f"Conversation not found: {conversation_id}")
+                return {"error": "Conversation not found"}, 404
+
+            message = Message(
+                conversation_id=conversation_id,
+                sender=SenderType.user,
+                message_text=message_text
+            )
+            db.session.add(message)
+            db.session.flush()
+            db.session.commit()
             
-            # Use cached profile
-            conv_dict = conv.to_dict()
-            conv_dict['ai_profile'] = ai_profile_cache[conv.content_id]
-            conversation_data.append(conv_dict)
+            conversation.last_update = func.now()
+            conversation.update_score(randomness_factor=0.05)
+            db.session.commit()
 
-        # Generate next cursor
-        next_cursor = None
-        if has_next and conversations:
-            next_cursor = encode_cursor(conversations[-1].cursor_value)
+            headers = {'X-API-KEY': API_KEY}
+            correlation_id = request.headers.get('X-Correlation-ID')
+            if correlation_id:
+                headers['X-Correlation-ID'] = correlation_id
 
-        # If refresh is requested and this is the first page
-        if refresh and not cursor:
-            requests.post(
-                f"{CONVERSATION_API_URL}/api/convos/batch", 
-                json={'user_id': user_id, 'num_convos': 5},
-                headers={'X-API-KEY': API_KEY}
+            influencer_response = requests.post(
+                f"{INFLUENCER_API_URL}/api/message/ai",
+                json={'conversation_id': conversation_id},
+                headers=headers
             )
 
-        response_data = {
-            "conversations": conversation_data,
-            "next_cursor": next_cursor,
-            "has_next": has_next
-        }
-        return jsonify(add_links(response_data, 'list', user_id=user_id)), 200
+            logging.info(f"Nudged influencer with status code: {influencer_response.status_code}")
 
-    except Exception as e:
-        logging.error(f"Error fetching conversations: {e}")
-        return jsonify({"error": "Failed to fetch conversations"}), 500
+            logging.info(f"Reply added successfully to conversation ID: {conversation_id}")
+            response_data = {
+                "message": "Reply added successfully",
+                "conversation": conversation.to_dict()
+            }
+            return add_links(response_data, 'reply', conversation_id=conversation_id), 200
 
-# Get a conversation by id
-@app.route('/api/convos/<int:conversation_id>', methods=['GET'])
-def get_conversation(conversation_id):
-    try:
-        conversation = db.session.get(Conversation, conversation_id)
-        if not conversation:
-            logging.warning(f"Conversation not found: {conversation_id}")
-            return jsonify({"error": "Conversation not found"}), 404
-        return jsonify(conversation.to_dict()), 200
-    except Exception as e:
-        logging.error(f"Error fetching conversation: {e}")
-        return jsonify({"error": "Failed to fetch conversation"}), 500
+        except Exception as e:
+            db.session.rollback()
+            logging.error(f"Error adding reply: {e}")
+            return {"error": "Failed to add reply"}, 500
 
-@app.route('/api/convos/<int:conversation_id>/reply', methods=['PUT'])
-def add_reply(conversation_id):  # Add the parameter here
-    if not request.json or 'message' not in request.json:
-        logging.warning("message is required")
-        return jsonify({"error": "message is required"}), 400
+@ns.route('/shuffle')
+class ShuffleResource(Resource):
+    @api.doc('shuffle_conversations')
+    @api.expect(shuffle_model)
+    def post(self):
+        if not request.json or 'user_id' not in request.json:
+            return {"error": "user_id is required"}, 400
 
-    message_text = request.json['message']
+        user_id = request.json['user_id']
+        volatility = request.json.get('volatility', 0.5)
 
-    try:
-        conversation = db.session.get(Conversation, conversation_id)
-        if not conversation:
-            logging.warning(f"Conversation not found: {conversation_id}")
-            return jsonify({"error": "Conversation not found"}), 404
+        subprocess.Popen([
+            'python', '-c',
+            f"import requests; "
+            f"requests.post('{CONVERSATION_API_URL}/api/convos/shuffle-helper', "
+            f"json={{'user_id': {user_id}, 'volatility': {volatility}}}, "
+            f"headers={{'X-API-KEY': '{API_KEY}'}})"
+        ])
 
-        message = Message(
-            conversation_id=conversation_id,
-            sender=SenderType.user,
-            message_text=message_text
-        )
-        db.session.add(message)
-        db.session.flush()
-        db.session.commit()
-        
-        # Update conversation last_update
-        conversation.last_update = func.now()
-        conversation.update_score(randomness_factor=0.05)
-        db.session.commit()
+        return {"message": "Shuffle initiated"}, 202
 
-        # Nudge the influencer api with the conversation_id to get a reply
-        influencer_response = requests.post(
-            f"{INFLUENCER_API_URL}/api/message/ai",
-            json={'conversation_id': conversation_id},
-            headers={'X-API-KEY': API_KEY}
-        )
+@ns.route('/shuffle-helper')
+class ShuffleHelperResource(Resource):
+    @api.doc('shuffle_helper', private=True)
+    @api.expect(shuffle_model)
+    def post(self):
+        if not request.json or 'user_id' not in request.json:
+            return {"error": "user_id is required"}, 400
 
-        logging.info(f"Nudged influencer with status code: {influencer_response.status_code}")
+        user_id = request.json['user_id']
+        volatility = request.json.get('volatility', 0.5)
 
-        logging.info(f"Reply added successfully to conversation ID: {conversation_id}")
-        response_data = {
-            "message": "Reply added successfully",
-            "conversation": conversation.to_dict()
-        }
-        return jsonify(add_links(response_data, 'reply', conversation_id=conversation_id)), 200
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error adding reply: {e}")
-        return jsonify({"error": "Failed to add reply"}), 500
-
-@app.route('/api/convos/<int:conversation_id>', methods=['DELETE'])
-def delete_conversation(conversation_id):
-    try:
-        conversation = db.session.get(Conversation, conversation_id)
-        if not conversation:
-            logging.warning(f"Conversation not found for deletion: {conversation_id}")
-            return jsonify({"error": "Conversation not found"}), 404
-
-        db.session.delete(conversation)
-        db.session.commit()
-
-        logging.info(f"Conversation {conversation_id} deleted successfully")
-        response_data = {
-            "message": f"Conversation {conversation_id} deleted successfully"
-        }
-        return jsonify(add_links(response_data, 'delete')), 200
-
-    except Exception as e:
-        db.session.rollback()
-        logging.error(f"Error deleting conversation: {e}")
-        return jsonify({"error": "Failed to delete conversation"}), 500 
-
-# Add new shuffle endpoint
-@app.route('/api/convos/shuffle', methods=['POST'])
-def shuffle_conversations():
-    if not request.json or 'user_id' not in request.json:
-        return jsonify({"error": "user_id is required"}), 400
-
-    user_id = request.json['user_id']
-    volatility = request.json.get('volatility', 0.5)
-
-    # Start background process
-    subprocess.Popen([
-        'python', '-c',
-        f"import requests; "
-        f"requests.post('{CONVERSATION_API_URL}/api/convos/shuffle-helper', "
-        f"json={{'user_id': {user_id}, 'volatility': {volatility}}}, "
-        f"headers={{'X-API-KEY': '{API_KEY}'}})"
-    ])
-
-    return jsonify({"message": "Shuffle initiated"}), 202  # 202 Accepted indicates the request is being processed
-
-@app.route('/api/convos/shuffle-helper', methods=['POST'])
-def shuffle_helper():
-    """Helper endpoint that actually performs the shuffle"""
-    if not request.json or 'user_id' not in request.json:
-        return jsonify({"error": "user_id is required"}), 400
-
-    user_id = request.json['user_id']
-    volatility = request.json.get('volatility', 0.5)
-
-    try:
-        Conversation.shuffle_scores(user_id, volatility)
-        return jsonify({"message": "Conversations shuffled successfully"}), 200
-    except Exception as e:
-        logging.error(f"Error shuffling conversations: {e}")
-        return jsonify({"error": "Failed to shuffle conversations"}), 500
-
+        try:
+            Conversation.shuffle_scores(user_id, volatility)
+            return {"message": "Conversations shuffled successfully"}, 200
+        except Exception as e:
+            logging.error(f"Error shuffling conversations: {e}")
+            return {"error": "Failed to shuffle conversations"}, 500
 
 # add middleware
 @app.before_request
 def log_request_info():
+    # Exempt the /docs endpoint from logging and API key checks
+    if request.path.startswith('/docs') or request.path.startswith('/swagger'):
+        return
+
     logging.info(f"Headers: {request.headers}")
     logging.info(f"Body: {request.get_data()}")
 
     # for now just check that it has a Authorization header
     if 'X-API-KEY' not in request.headers:
         logging.warning("No X-API-KEY header")
-        return jsonify({'error': 'No X-API-KEY'}), 401
+        return {"error": "No X-API-KEY"}, 401
     
     x_api_key = request.headers.get('X-API-KEY')
     if x_api_key != API_KEY:
         logging.warning("Invalid X-API-KEY")
-        return jsonify({'error': 'Invalid X-API-KEY'}), 401
+        return {"error": "Invalid X-API-KEY"}, 401
     else:
         return
 
